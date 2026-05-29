@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hex Rotation Puzzle</title>
+
+  <style>
+    :root {
+      --bg: #e8dfd1;
+      --ink: #2b2323;
+      --tile: #faf7f2;
+      --tile-border: #d8d2c8;
+      --button-bg: #f7f2e9;
+      --green: #22c55e;
+      --green-fill: rgba(34, 197, 94, 0.22);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at top, #f6efe3 0%, var(--bg) 55%, #d6c8b8 100%);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+    }
+
+    svg#board {
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      touch-action: manipulation;
+      user-select: none;
+    }
+
+    .tile {
+      cursor: pointer;
+    }
+
+    .hex {
+      fill: var(--tile);
+      stroke: var(--tile-border);
+      stroke-width: 2;
+      filter: url(#shadow);
+    }
+
+    .pattern {
+      stroke: var(--ink);
+      stroke-width: 8;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .tile:hover .hex {
+      filter: url(#shadow) brightness(1.03);
+    }
+
+    .highlight-hex {
+      fill: transparent;
+      stroke: var(--green);
+      stroke-width: 5;
+      pointer-events: none;
+      filter: drop-shadow(0 0 7px rgba(34, 197, 94, 0.9));
+    }
+
+    .unit-cell-parallelogram {
+      fill: var(--green-fill);
+      stroke: var(--green);
+      stroke-width: 4;
+      stroke-dasharray: 10 7;
+      pointer-events: none;
+      filter: drop-shadow(0 0 7px rgba(34, 197, 94, 0.45));
+    }
+
+    .ui {
+      position: fixed;
+      top: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(250, 247, 242, 0.82);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 18px rgba(0,0,0,0.12);
+      z-index: 10;
+      user-select: none;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 9px 15px;
+      background: var(--button-bg);
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.12);
+      white-space: nowrap;
+    }
+
+    button:hover {
+      background: #fffaf2;
+    }
+
+    #unitCellButton.active {
+      background: #dcfce7;
+      color: #166534;
+    }
+
+    .speed-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #6f6259;
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    .speed-control input {
+      width: 140px;
+      accent-color: #9b6b43;
+      cursor: pointer;
+    }
+
+    #speedValue {
+      min-width: 52px;
+      text-align: right;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hint {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      padding: 9px 14px;
+      border-radius: 999px;
+      background: rgba(250, 247, 242, 0.76);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 18px rgba(0,0,0,0.12);
+      color: #6f6259;
+      font-size: 0.9rem;
+      z-index: 10;
+      user-select: none;
+    }
+
+    @media (max-width: 860px) {
+      .ui {
+        top: 10px;
+        border-radius: 18px;
+        flex-wrap: wrap;
+        justify-content: center;
+        width: calc(100vw - 24px);
+      }
+
+      .speed-control {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .speed-control input {
+        width: min(180px, 45vw);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <svg id="board"></svg>
+
+  <div class="ui">
+    <button id="shuffleButton">Shuffle</button>
+    <button id="solveButton">Solve</button>
+    <button id="unitCellButton">Define unit cell</button>
+
+    <label class="speed-control">
+      Speed
+      <input id="speedSlider" type="range" min="80" max="600" step="10" value="220" />
+      <span id="speedValue">220 ms</span>
+    </label>
+  </div>
+
+  <div id="hint" class="hint">Click any tile to rotate it clockwise.</div>
+
+  <script>
+    const SVG_NS = "http://www.w3.org/2000/svg";
+
+    const board = document.getElementById("board");
+    const shuffleButton = document.getElementById("shuffleButton");
+    const solveButton = document.getElementById("solveButton");
+    const unitCellButton = document.getElementById("unitCellButton");
+    const speedSlider = document.getElementById("speedSlider");
+    const speedValue = document.getElementById("speedValue");
+    const hint = document.getElementById("hint");
+
+    let animationMs = Number(speedSlider.value);
+
+    speedSlider.addEventListener("input", () => {
+      animationMs = Number(speedSlider.value);
+      speedValue.textContent = `${animationMs} ms`;
+    });
+
+    const R = 56;
+    const SQRT3 = Math.sqrt(3);
+
+    const HEX_W = SQRT3 * R;
+    const HEX_H = 2 * R;
+
+    /*
+      True axial lattice.
+
+      Every tile has integer lattice coordinates (q, r).
+
+      Pixel position:
+        x = HEX_W * (q + r / 2)
+        y = 1.5 * R * r
+
+      This makes the modular unit-cell logic globally consistent.
+    */
+    const X_BASIS_Q = HEX_W;
+    const X_BASIS_R = HEX_W / 2;
+    const Y_BASIS_Q = 0;
+    const Y_BASIS_R = 1.5 * R;
+
+    const hexPoints = [
+      [0, -R],
+      [SQRT3 / 2 * R, -R / 2],
+      [SQRT3 / 2 * R,  R / 2],
+      [0,  R],
+      [-SQRT3 / 2 * R,  R / 2],
+      [-SQRT3 / 2 * R, -R / 2]
+    ].map(p => p.join(",")).join(" ");
+
+    const tiles = [];
+    const tileByKey = new Map();
+
+    let overlayLayer;
+
+    let unitCellMode = "off";
+    let unitCellOrigin = null;
+    let unitCellA = null;
+    let unitCellB = null;
+    let unitCellDet = null;
+    let periodicClasses = [];
+
+    function svgEl(tag, attrs = {}) {
+      const el = document.createElementNS(SVG_NS, tag);
+
+      for (const [key, value] of Object.entries(attrs)) {
+        el.setAttribute(key, value);
+      }
+
+      return el;
+    }
+
+    function keyOf(q, r) {
+      return `${q},${r}`;
+    }
+
+    function positiveMod(n, m) {
+      return ((n % m) + m) % m;
+    }
+
+    function axialToPixel(q, r) {
+      return {
+        x: X_BASIS_Q * q + X_BASIS_R * r,
+        y: Y_BASIS_Q * q + Y_BASIS_R * r
+      };
+    }
+
+    function clearBoard() {
+      board.innerHTML = "";
+      tiles.length = 0;
+      tileByKey.clear();
+    }
+
+    function addDefs() {
+      const defs = svgEl("defs");
+
+      const clipPath = svgEl("clipPath", {
+        id: "hexClip"
+      });
+
+      const clipPolygon = svgEl("polygon", {
+        points: hexPoints
+      });
+
+      clipPath.appendChild(clipPolygon);
+
+      const filter = svgEl("filter", {
+        id: "shadow",
+        x: -R - 20,
+        y: -R - 20,
+        width: HEX_W + 40,
+        height: HEX_H + 40,
+        filterUnits: "userSpaceOnUse"
+      });
+
+      const shadow = svgEl("feDropShadow", {
+        dx: "0",
+        dy: "2",
+        stdDeviation: "2.2",
+        "flood-color": "#000000",
+        "flood-opacity": "0.15"
+      });
+
+      filter.appendChild(shadow);
+      defs.append(clipPath, filter);
+      board.appendChild(defs);
+    }
+
+    function addOverlayLayer() {
+      overlayLayer = svgEl("g", {
+        id: "overlayLayer"
+      });
+
+      board.appendChild(overlayLayer);
+    }
+
+    function createTile(q, r, cx, cy) {
+      const tile = svgEl("g", {
+        class: "tile",
+        transform: `translate(${cx}, ${cy})`
+      });
+
+      const inner = svgEl("g");
+      const initialOrientation = Math.floor(Math.random() * 6);
+
+      tile.q = q;
+      tile.r = r;
+      tile.cx = cx;
+      tile.cy = cy;
+
+      tile.dataset.orientation = initialOrientation;
+      tile.dataset.solution = 0;
+      tile.dataset.angle = initialOrientation * 60;
+      tile.dataset.animating = "false";
+      tile.inner = inner;
+
+      const hex = svgEl("polygon", {
+        class: "hex",
+        points: hexPoints
+      });
+
+      const patternGroup = svgEl("g", {
+        "clip-path": "url(#hexClip)"
+      });
+
+      const path1 = svgEl("path", {
+        class: "pattern",
+        d: "M -24.25 -42 C -15 -25, -15 25, -24.25 42"
+      });
+
+      const path2 = svgEl("path", {
+        class: "pattern",
+        d: "M -48.5 0 C -28 0, 8 -13, 24.25 -42"
+      });
+
+      const path3 = svgEl("path", {
+        class: "pattern",
+        d: "M 48.5 0 C 28 0, 15 25, 24.25 42"
+      });
+
+      patternGroup.append(path1, path2, path3);
+      inner.append(hex, patternGroup);
+      tile.appendChild(inner);
+
+      setTileRotation(tile, Number(tile.dataset.angle));
+
+      tile.addEventListener("click", () => {
+        handleTileClick(tile);
+      });
+
+      board.appendChild(tile);
+      tiles.push(tile);
+      tileByKey.set(keyOf(q, r), tile);
+    }
+
+    function setTileRotation(tile, angle) {
+      tile.inner.setAttribute("transform", `rotate(${angle})`);
+    }
+
+    function updateTileRotation(tile) {
+      setTileRotation(tile, Number(tile.dataset.angle));
+    }
+
+    function easeInOutCubic(t) {
+      return t < 0.5
+        ? 4 * t * t * t
+        : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+
+    function animateTileRotation(tile, fromAngle, toAngle, duration = animationMs) {
+      if (tile.dataset.animating === "true") return;
+
+      tile.dataset.animating = "true";
+
+      const startTime = performance.now();
+
+      function frame(now) {
+        const rawT = (now - startTime) / duration;
+        const t = Math.min(rawT, 1);
+        const eased = easeInOutCubic(t);
+
+        const currentAngle = fromAngle + (toAngle - fromAngle) * eased;
+
+        setTileRotation(tile, currentAngle);
+
+        if (t < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          setTileRotation(tile, toAngle);
+
+          if (toAngle === 360) {
+            tile.dataset.angle = 0;
+            setTileRotation(tile, 0);
+          }
+
+          tile.dataset.animating = "false";
+        }
+      }
+
+      requestAnimationFrame(frame);
+    }
+
+    function rotateTileClockwise(tile) {
+      if (tile.dataset.animating === "true") return;
+
+      const currentOrientation = Number(tile.dataset.orientation);
+      const nextOrientation = (currentOrientation + 1) % 6;
+
+      const fromAngle = Number(tile.dataset.angle);
+      let toAngle;
+
+      tile.dataset.orientation = nextOrientation;
+
+      if (currentOrientation === 5) {
+        toAngle = 360;
+        tile.dataset.angle = 360;
+      } else {
+        toAngle = nextOrientation * 60;
+        tile.dataset.angle = toAngle;
+      }
+
+      animateTileRotation(tile, fromAngle, toAngle, animationMs);
+    }
+
+    function setTileOrientation(tile, orientation, animated = false) {
+      orientation = positiveMod(orientation, 6);
+
+      const currentAngle = Number(tile.dataset.angle);
+      const targetAngle = orientation === 0 && currentAngle === 300
+        ? 360
+        : orientation * 60;
+
+      tile.dataset.orientation = orientation;
+      tile.dataset.angle = targetAngle;
+
+      if (animated) {
+        animateTileRotation(tile, currentAngle, targetAngle, animationMs);
+      } else {
+        if (targetAngle === 360) {
+          tile.dataset.angle = 0;
+          setTileRotation(tile, 0);
+        } else {
+          setTileRotation(tile, targetAngle);
+        }
+      }
+    }
+
+    function handleTileClick(tile) {
+      if (unitCellMode === "choosing-a") {
+        chooseUnitCellA(tile);
+        return;
+      }
+
+      if (unitCellMode === "choosing-b") {
+        chooseUnitCellB(tile);
+        return;
+      }
+
+      if (unitCellMode === "active") {
+        rotatePeriodicClassOf(tile);
+        return;
+      }
+
+      rotateTileClockwise(tile);
+    }
+
+    function startUnitCellDefinition() {
+      clearOverlay();
+
+      unitCellOrigin = findVisibleCenterTile();
+      unitCellA = null;
+      unitCellB = null;
+      unitCellDet = null;
+      periodicClasses = [];
+
+      unitCellMode = "choosing-a";
+
+      unitCellButton.textContent = "Reset unit cell";
+      unitCellButton.classList.add("active");
+
+      highlightTile(unitCellOrigin);
+
+      hint.textContent = "Unit cell: click a tile to define the a vector.";
+    }
+
+    function resetUnitCell() {
+      unitCellMode = "off";
+      unitCellOrigin = null;
+      unitCellA = null;
+      unitCellB = null;
+      unitCellDet = null;
+      periodicClasses = [];
+
+      unitCellButton.textContent = "Define unit cell";
+      unitCellButton.classList.remove("active");
+
+      clearOverlay();
+
+      hint.textContent = "Click any tile to rotate it clockwise.";
+    }
+
+    function findVisibleCenterTile() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      let closest = null;
+      let bestDistance = Infinity;
+
+      for (const tile of tiles) {
+        const dx = tile.cx - width / 2;
+        const dy = tile.cy - height / 2;
+        const distance = dx * dx + dy * dy;
+
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          closest = tile;
+        }
+      }
+
+      return closest;
+    }
+
+    function chooseUnitCellA(tile) {
+      if (tile === unitCellOrigin) {
+        hint.textContent = "Choose a different tile for the a vector.";
+        return;
+      }
+
+      unitCellA = {
+        dq: tile.q - unitCellOrigin.q,
+        dr: tile.r - unitCellOrigin.r,
+        tile
+      };
+
+      clearOverlay();
+      highlightTile(unitCellOrigin);
+      highlightTile(tile);
+
+      unitCellMode = "choosing-b";
+      hint.textContent = "Now click a second tile to define the b vector.";
+    }
+
+    function chooseUnitCellB(tile) {
+      if (tile === unitCellOrigin) {
+        hint.textContent = "Choose a different tile for the b vector.";
+        return;
+      }
+
+      const candidateB = {
+        dq: tile.q - unitCellOrigin.q,
+        dr: tile.r - unitCellOrigin.r,
+        tile
+      };
+
+      const det = determinant(unitCellA, candidateB);
+
+      if (det === 0) {
+        hint.textContent = "Those vectors are collinear. Choose a different second tile.";
+        return;
+      }
+
+      unitCellB = candidateB;
+      unitCellDet = Math.abs(det);
+
+      finishUnitCellDefinition();
+    }
+
+    function determinant(a, b) {
+      return a.dq * b.dr - a.dr * b.dq;
+    }
+
+    /*
+      Core modular rule.
+
+      Unit-cell vectors:
+        a = (aQ, aR)
+        b = (bQ, bR)
+
+      Two tiles p and p' are connected iff:
+
+        p' - p = m a + n b
+
+      for integers m, n.
+    */
+    function areEquivalentByUnitCell(tile1, tile2) {
+      const dq = tile2.q - tile1.q;
+      const dr = tile2.r - tile1.r;
+
+      const aQ = unitCellA.dq;
+      const aR = unitCellA.dr;
+      const bQ = unitCellB.dq;
+      const bR = unitCellB.dr;
+
+      const det = aQ * bR - aR * bQ;
+
+      if (det === 0) return false;
+
+      const mNumerator = dq * bR - dr * bQ;
+      const nNumerator = aQ * dr - aR * dq;
+
+      return mNumerator % det === 0 && nNumerator % det === 0;
+    }
+
+    function getEquivalenceClass(tile) {
+      return tiles.filter(other => areEquivalentByUnitCell(tile, other));
+    }
+
+    /*
+      Strict enforcement.
+
+      As soon as a unit cell is defined, every visible equivalence class is
+      forced to have one shared orientation. This is the important part:
+      the random board immediately becomes periodic under the chosen
+      superlattice.
+    */
+    function enforceUnitCellOrientations() {
+      const handled = new Set();
+      periodicClasses = [];
+
+      for (const representative of tiles) {
+        if (handled.has(representative)) continue;
+
+        const cls = getEquivalenceClass(representative);
+        const orientation = Number(representative.dataset.orientation);
+
+        for (const tile of cls) {
+          setTileOrientation(tile, orientation, false);
+          handled.add(tile);
+        }
+
+        periodicClasses.push(cls);
+      }
+    }
+
+    function rotatePeriodicClassOf(tile) {
+      const cls = getEquivalenceClass(tile);
+
+      if (cls.length === 0) {
+        rotateTileClockwise(tile);
+        return;
+      }
+
+      const currentOrientation = Number(tile.dataset.orientation);
+      const nextOrientation = (currentOrientation + 1) % 6;
+
+      for (const t of cls) {
+        setTileOrientation(t, nextOrientation, true);
+      }
+    }
+
+    function finishUnitCellDefinition() {
+      unitCellMode = "active";
+
+      enforceUnitCellOrientations();
+      showUnitCellOverlay();
+
+      hint.textContent =
+        `Unit cell active: ${unitCellDet} orientation class${unitCellDet === 1 ? "" : "es"}. Click a tile to rotate its whole periodic class.`;
+
+      window.setTimeout(() => {
+        clearOverlay();
+      }, 1500);
+    }
+
+    function clearOverlay() {
+      if (overlayLayer) {
+        overlayLayer.innerHTML = "";
+      }
+    }
+
+    function highlightTile(tile) {
+      const g = svgEl("g", {
+        transform: `translate(${tile.cx}, ${tile.cy})`
+      });
+
+      const outline = svgEl("polygon", {
+        class: "highlight-hex",
+        points: hexPoints
+      });
+
+      g.appendChild(outline);
+      overlayLayer.appendChild(g);
+    }
+
+    function showUnitCellOverlay() {
+      clearOverlay();
+
+      const o = unitCellOrigin;
+      const a = unitCellA;
+      const b = unitCellB;
+
+      /*
+        The unit cell parallelogram is always:
+          O, O + a, O + a + b, O + b
+      */
+      const p0 = axialToPixel(o.q, o.r);
+      const p1 = axialToPixel(o.q + a.dq, o.r + a.dr);
+      const p2 = axialToPixel(o.q + a.dq + b.dq, o.r + a.dr + b.dr);
+      const p3 = axialToPixel(o.q + b.dq, o.r + b.dr);
+
+      const parallelogram = svgEl("polygon", {
+        class: "unit-cell-parallelogram",
+        points: `${p0.x},${p0.y} ${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}`
+      });
+
+      overlayLayer.appendChild(parallelogram);
+
+      highlightTile(o);
+      highlightTile(a.tile);
+      highlightTile(b.tile);
+    }
+
+    function buildBoard() {
+      clearBoard();
+      addDefs();
+
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      board.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+      const margin = R * 4;
+
+      /*
+        Generate a generous q/r rectangle, then keep only tiles whose
+        centers are close enough to the viewport.
+      */
+      const qMin = Math.floor(-width / HEX_W) - 10;
+      const qMax = Math.ceil(width / HEX_W) + 10;
+      const rMin = Math.floor(-height / (1.5 * R)) - 10;
+      const rMax = Math.ceil(height / (1.5 * R)) + 10;
+
+      for (let r = rMin; r <= rMax; r++) {
+        for (let q = qMin; q <= qMax; q++) {
+          const p = axialToPixel(q, r);
+
+          if (
+            p.x > -margin &&
+            p.x < width + margin &&
+            p.y > -margin &&
+            p.y < height + margin
+          ) {
+            createTile(q, r, p.x, p.y);
+          }
+        }
+      }
+
+      addOverlayLayer();
+
+      if (unitCellMode !== "off") {
+        resetUnitCell();
+      }
+    }
+
+    function shuffleBoard() {
+      if (unitCellMode === "active") {
+        /*
+          Shuffle by equivalence class, so the superlattice rule remains true.
+        */
+        const handled = new Set();
+
+        for (const tile of tiles) {
+          if (handled.has(tile)) continue;
+
+          const cls = getEquivalenceClass(tile);
+          const orientation = Math.floor(Math.random() * 6);
+
+          for (const t of cls) {
+            setTileOrientation(t, orientation, false);
+            handled.add(t);
+          }
+        }
+
+        return;
+      }
+
+      for (const tile of tiles) {
+        const orientation = Math.floor(Math.random() * 6);
+        setTileOrientation(tile, orientation, false);
+      }
+    }
+
+    function solveBoard() {
+      if (unitCellMode === "active") {
+        /*
+          Solve by equivalence class, so the superlattice rule remains true.
+        */
+        const handled = new Set();
+
+        for (const tile of tiles) {
+          if (handled.has(tile)) continue;
+
+          const cls = getEquivalenceClass(tile);
+          const solution = Number(tile.dataset.solution);
+
+          for (const t of cls) {
+            setTileOrientation(t, solution, false);
+            handled.add(t);
+          }
+        }
+
+        return;
+      }
+
+      for (const tile of tiles) {
+        const solution = Number(tile.dataset.solution);
+        setTileOrientation(tile, solution, false);
+      }
+    }
+
+    function debounce(fn, delay = 150) {
+      let timeout;
+
+      return () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(fn, delay);
+      };
+    }
+
+    shuffleButton.addEventListener("click", shuffleBoard);
+    solveButton.addEventListener("click", solveBoard);
+
+    unitCellButton.addEventListener("click", () => {
+      if (unitCellMode === "off") {
+        startUnitCellDefinition();
+      } else {
+        resetUnitCell();
+      }
+    });
+
+    window.addEventListener("resize", debounce(buildBoard));
+
+    buildBoard();
+  </script>
+</body>
+</html>
